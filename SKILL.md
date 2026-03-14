@@ -52,9 +52,48 @@ OpenClaw injects these via `skills.entries.*.env` at agent run time. They are sc
 python3 {baseDir}/scripts/robot_cmd.py <command> [options]
 ```
 
+## Agent Workflow Rules (IMPORTANT)
+
+**ALWAYS run `preflight` before sending any robot command.** This checks whether the device is online, its battery level, and current work mode.
+
+### Decision flow:
+
+```
+1. Run: python3 {baseDir}/scripts/robot_cmd.py preflight
+2. Check the result:
+   - "ready": false  → Tell the user why (offline / OTA / low battery). Do NOT send commands.
+   - "ready": true, with "note" about current mode → Inform the user, then proceed.
+   - "ready": true, idle → Proceed with the command.
+3. Execute the requested command.
+4. Report the result to the user.
+```
+
+### State-aware behavior:
+
+| current_status | Meaning | What to do |
+|----------------|---------|------------|
+| `offline` | Device not connected | Tell user. Do not send commands. |
+| `idle` | Ready | Proceed normally. |
+| `follow` | Following a person | Warn before sending conflicting commands (e.g. remote_control). Use `stop` first. |
+| `remote_control` | Joystick active | Already in RC mode. Can send move commands directly. |
+| `patrol` | Patrolling | Warn before interrupting. Use `stop` first. |
+| `go_charge` | Returning to charger | Warn before interrupting. |
+| `guard` | Monitoring | Warn before interrupting. |
+| `ota` | Firmware updating | Do NOT send any commands. Wait. |
+| `build_map` | Building SLAM map | Do NOT interrupt. |
+| `active_action` | Performing action | Conflicts with follow. Use `stop` first if needed. |
+
+### Battery rules:
+
+- **< 10%** and not charging → Suggest `charge` command before any movement.
+- **< 5%** → Refuse movement commands, only allow `charge` and `status`.
+
 ## Quick Examples
 
 ```bash
+# ALWAYS run preflight check first
+python3 {baseDir}/scripts/robot_cmd.py preflight
+
 # Move robot forward
 python3 {baseDir}/scripts/robot_cmd.py move --direction forward
 
@@ -160,14 +199,39 @@ python3 {baseDir}/scripts/robot_cmd.py tts --text "你好世界"
 python3 {baseDir}/scripts/robot_cmd.py tts --text "请安静" --keep-silent
 ```
 
-### 5. Device Status
+### 5. Device Status & Preflight
 
 ```bash
-# Get battery level, online status, charging state
+# Pre-flight check (ALWAYS run this before any command)
+python3 {baseDir}/scripts/robot_cmd.py preflight
+# Returns: ready (bool), current_status, battery, is_charging, issues[], suggestion
+
+# Get raw device status
 python3 {baseDir}/scripts/robot_cmd.py status
 ```
 
-Returns: `battery`, `current_status` (offline/idle/ota), `is_charging`, `is_bluetooth_connected`.
+**Preflight response example (ready):**
+```json
+{
+  "ready": true,
+  "current_status": "idle",
+  "current_status_name": "空闲",
+  "battery": 85,
+  "is_charging": false,
+  "note": "Device is online and idle. Ready to accept commands."
+}
+```
+
+**Preflight response example (not ready):**
+```json
+{
+  "ready": false,
+  "current_status": "offline",
+  "battery": -1,
+  "issues": ["Device is OFFLINE — cannot accept commands"],
+  "suggestion": "Device is OFFLINE — cannot accept commands"
+}
+```
 
 ### 6. Live Video
 

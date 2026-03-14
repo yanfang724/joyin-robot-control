@@ -227,12 +227,66 @@ def cmd_tts(cfg, args):
 
 
 # ---------------------------------------------------------------------------
-# 5. Device Status
+# 5. Device Status & Preflight Check
 # ---------------------------------------------------------------------------
+
+WORK_MODE_NAMES = {
+    "offline": "离线", "idle": "空闲", "build_map": "建图",
+    "patrol": "巡逻", "ota": "OTA更新", "remote_control": "遥控中",
+    "follow": "跟随中", "avtalk": "语音对话", "go_charge": "回充中",
+    "guard": "监控中", "active_action": "主动动作模式",
+}
+
 
 def cmd_status(cfg, _args):
     """Get device status: battery, online state, charging."""
     return api_get(cfg, "/v1/device/status")
+
+
+def cmd_preflight(cfg, _args):
+    """Pre-flight check: verify device is online and ready. Run this BEFORE sending any command."""
+    result = api_get(cfg, "/v1/device/status")
+    if result.get("code") != 200:
+        return {
+            "ready": False,
+            "reason": f"Failed to reach device API: {result.get('msg', 'unknown error')}",
+            "raw": result,
+        }
+
+    data = result.get("data", {})
+    current_status = data.get("current_status", "offline")
+    battery = data.get("battery", -1)
+    is_charging = data.get("is_charging", False)
+
+    issues = []
+    if current_status == "offline":
+        issues.append("Device is OFFLINE — cannot accept commands")
+    if current_status == "ota":
+        issues.append("Device is updating firmware (OTA) — wait until complete")
+    if isinstance(battery, (int, float)) and battery != -1 and battery < 10 and not is_charging:
+        issues.append(f"Battery critically low ({battery}%) — send 'charge' command first")
+
+    mode_name = WORK_MODE_NAMES.get(current_status, current_status)
+
+    report = {
+        "ready": len(issues) == 0,
+        "current_status": current_status,
+        "current_status_name": mode_name,
+        "battery": battery,
+        "is_charging": is_charging,
+        "is_bluetooth_connected": data.get("is_bluetooth_connected", False),
+    }
+
+    if issues:
+        report["issues"] = issues
+        report["suggestion"] = issues[0]
+    else:
+        if current_status in ("follow", "remote_control", "patrol", "guard", "active_action"):
+            report["note"] = f"Device is currently in '{mode_name}' mode. Some commands may conflict — use 'stop' first if needed."
+        else:
+            report["note"] = "Device is online and idle. Ready to accept commands."
+
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -420,8 +474,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--keep-silent", action="store_true", help="Close mic after playback")
     s.set_defaults(func=cmd_tts)
 
-    # -- Device status --
-    sub.add_parser("status", help="Get device status").set_defaults(func=cmd_status)
+    # -- Device status & preflight --
+    sub.add_parser("preflight", help="Pre-flight check: is device online & ready?").set_defaults(func=cmd_preflight)
+    sub.add_parser("status", help="Get raw device status").set_defaults(func=cmd_status)
 
     # -- Live video --
     s = sub.add_parser("live_push", help="Start/stop live push stream")
